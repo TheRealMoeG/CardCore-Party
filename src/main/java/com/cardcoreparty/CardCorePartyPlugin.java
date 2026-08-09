@@ -74,7 +74,7 @@ public class CardCorePartyPlugin extends Plugin
         panel = new CardCorePartyPanel();
         panel.setActions(this::createParty, this::joinParty, this::leaveParty, this::queryTcg);
 
-        BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/icon.png");
+        BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/cardcore.png");
         navigationButton = NavigationButton.builder()
             .tooltip("CardCore Party")
             .icon(icon)
