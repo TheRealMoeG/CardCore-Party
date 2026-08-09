@@ -11,5 +11,6 @@ import net.runelite.client.party.messages.PartyMemberMessage;
 public class CardCoreCollectionMessage extends PartyMemberMessage
 {
     private long revision;
+    private String playerName;
     private List<String> ownedNames = new ArrayList<>();
 }

@@ -4,7 +4,6 @@ import com.cardcoreparty.party.CardCoreCollectionMessage;
 import com.cardcoreparty.ui.CardCorePartyPanel;
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -16,11 +15,12 @@ import java.util.Set;
 import javax.inject.Inject;
 import javax.swing.SwingUtilities;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Client;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.events.PluginMessage;
 import net.runelite.client.party.PartyMember;
-import net.runelite.client.callback.ClientThread;
 import net.runelite.client.party.PartyService;
 import net.runelite.client.party.WSClient;
 import net.runelite.client.party.events.UserJoin;
@@ -31,42 +31,32 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
 
-/**
- * Standalone CardCore companion for OSRS TCG.
- *
- * It does NOT import OSRS TCG classes. OSRS TCG intentionally exposes its owned-card names through
- * RuneLite's core PluginMessage event type so sibling Plugin Hub plugins can consume the data across
- * separate plugin classloaders.
- */
 @Slf4j
 @PluginDescriptor(
     name = "CardCore Party",
-    description = "Shares OSRS TCG owned-card progress across your RuneLite Party",
+    description = "Share OSRS TCG card unlocks with friends",
     tags = {"tcg", "cards", "party", "gim", "cardcore"}
 )
 public class CardCorePartyPlugin extends Plugin
 {
-    // Public OSRS TCG PluginMessage API constants. These are strings on purpose: Hub plugins cannot
-    // safely import one another's implementation classes.
     private static final String TCG_NAMESPACE = "osrstcg";
     private static final String TCG_QUERY = "query-owned-names";
     private static final String TCG_REPLY = "owned-names";
     private static final String TCG_CHANGED = "owned-names-changed";
     private static final String TCG_KEY_OWNED_NAMES = "ownedNames";
 
-    private static final int RECENT_LIMIT = 12;
-
     @Inject private net.runelite.client.eventbus.EventBus eventBus;
     @Inject private PartyService partyService;
     @Inject private WSClient wsClient;
     @Inject private ClientToolbar clientToolbar;
     @Inject private ClientThread clientThread;
+    @Inject private Client client;
 
     private final Set<String> localOwned = new LinkedHashSet<>();
     private final Map<Long, Set<String>> partyOwned = new HashMap<>();
-    private final ArrayDeque<String> recent = new ArrayDeque<>();
-    private long revision = 0L;
+    private final Map<Long, String> partyNames = new HashMap<>();
 
+    private long revision;
     private CardCorePartyPanel panel;
     private NavigationButton navigationButton;
 
@@ -82,8 +72,8 @@ public class CardCorePartyPlugin extends Plugin
         wsClient.registerMessage(CardCoreCollectionMessage.class);
 
         panel = new CardCorePartyPanel();
-        panel.setSyncAction(this::queryTcg);
-        panel.setPartyActions(this::joinParty, this::createParty, this::leaveParty);
+        panel.setActions(this::createParty, this::joinParty, this::leaveParty, this::queryTcg);
+
         BufferedImage icon = ImageUtil.loadImageResource(getClass(), "/icon.png");
         navigationButton = NavigationButton.builder()
             .tooltip("CardCore Party")
@@ -95,7 +85,6 @@ public class CardCorePartyPlugin extends Plugin
 
         queryTcg();
         refreshPanel();
-        log.info("CardCore Party started");
     }
 
     @Override
@@ -106,23 +95,9 @@ public class CardCorePartyPlugin extends Plugin
         {
             clientToolbar.removeNavigation(navigationButton);
         }
-        partyOwned.clear();
         localOwned.clear();
-        recent.clear();
-        log.info("CardCore Party stopped");
-    }
-
-
-    private void joinParty(String passphrase)
-    {
-        String key = passphrase == null ? "" : passphrase.trim();
-        if (key.isEmpty())
-        {
-            return;
-        }
-        partyService.changeParty(key);
-        queryTcg();
-        refreshPanel();
+        partyOwned.clear();
+        partyNames.clear();
     }
 
     private void createParty()
@@ -137,18 +112,33 @@ public class CardCorePartyPlugin extends Plugin
         });
     }
 
+    private void joinParty(String passphrase)
+    {
+        String key = passphrase == null ? "" : passphrase.trim();
+        if (key.isEmpty())
+        {
+            return;
+        }
+
+        partyService.changeParty(key);
+        partyOwned.clear();
+        partyNames.clear();
+        queryTcg();
+        refreshPanel();
+    }
+
     private void leaveParty()
     {
         partyService.changeParty(null);
         partyOwned.clear();
+        partyNames.clear();
+        SwingUtilities.invokeLater(() -> panel.setPartyKey(""));
         refreshPanel();
     }
 
     private void queryTcg()
     {
-        // Empty payload is sufficient for the OSRS TCG query API.
         eventBus.post(new PluginMessage(TCG_NAMESPACE, TCG_QUERY, Collections.emptyMap()));
-        refreshPanel();
     }
 
     @Subscribe
@@ -158,6 +148,7 @@ public class CardCorePartyPlugin extends Plugin
         {
             return;
         }
+
         if (!TCG_REPLY.equals(event.getName()) && !TCG_CHANGED.equals(event.getName()))
         {
             return;
@@ -169,21 +160,8 @@ public class CardCorePartyPlugin extends Plugin
             return;
         }
 
-        Set<String> added = new HashSet<>(next);
-        added.removeAll(localOwned);
         localOwned.clear();
         localOwned.addAll(next);
-
-        if (!added.isEmpty())
-        {
-            List<String> sorted = new ArrayList<>(added);
-            sorted.sort(String.CASE_INSENSITIVE_ORDER);
-            for (String card : sorted)
-            {
-                addRecent("You added: " + card);
-            }
-        }
-
         publishLocalSnapshot();
         refreshPanel();
     }
@@ -195,6 +173,7 @@ public class CardCorePartyPlugin extends Plugin
         {
             return;
         }
+
         PartyMember local = partyService.getLocalMember();
         if (local != null && local.getMemberId() == message.getMemberId())
         {
@@ -213,22 +192,14 @@ public class CardCorePartyPlugin extends Plugin
             }
         }
 
-        Set<String> previous = partyOwned.getOrDefault(message.getMemberId(), Collections.emptySet());
-        Set<String> added = new HashSet<>(next);
-        added.removeAll(previous);
         partyOwned.put(message.getMemberId(), next);
 
-        if (!added.isEmpty())
+        String explicit = cleanName(message.getPlayerName());
+        if (explicit != null)
         {
-            PartyMember member = partyService.getMemberById(message.getMemberId());
-            String who = member != null && member.getDisplayName() != null ? member.getDisplayName() : "Party member";
-            List<String> sorted = new ArrayList<>(added);
-            sorted.sort(String.CASE_INSENSITIVE_ORDER);
-            for (String card : sorted)
-            {
-                addRecent(who + " added: " + card);
-            }
+            partyNames.put(message.getMemberId(), explicit);
         }
+
         refreshPanel();
     }
 
@@ -243,6 +214,7 @@ public class CardCorePartyPlugin extends Plugin
     public void onUserPart(UserPart event)
     {
         partyOwned.remove(event.getMemberId());
+        partyNames.remove(event.getMemberId());
         refreshPanel();
     }
 
@@ -252,12 +224,15 @@ public class CardCorePartyPlugin extends Plugin
         {
             return;
         }
-        revision++;
+
         CardCoreCollectionMessage message = new CardCoreCollectionMessage();
-        message.setRevision(revision);
+        message.setRevision(++revision);
+        message.setPlayerName(localPlayerName());
+
         List<String> names = new ArrayList<>(localOwned);
         names.sort(String.CASE_INSENSITIVE_ORDER);
         message.setOwnedNames(names);
+
         partyService.send(message);
     }
 
@@ -265,9 +240,9 @@ public class CardCorePartyPlugin extends Plugin
     {
         if (!(raw instanceof Iterable))
         {
-            log.debug("OSRS TCG ownedNames payload missing or not iterable: {}", raw);
             return null;
         }
+
         Set<String> result = new LinkedHashSet<>();
         for (Object item : (Iterable<?>) raw)
         {
@@ -275,6 +250,7 @@ public class CardCorePartyPlugin extends Plugin
             {
                 continue;
             }
+
             String name = item.toString().trim();
             if (!name.isEmpty())
             {
@@ -282,15 +258,6 @@ public class CardCorePartyPlugin extends Plugin
             }
         }
         return result;
-    }
-
-    private void addRecent(String line)
-    {
-        recent.addFirst(line);
-        while (recent.size() > RECENT_LIMIT)
-        {
-            recent.removeLast();
-        }
     }
 
     private void refreshPanel()
@@ -306,23 +273,72 @@ public class CardCorePartyPlugin extends Plugin
             union.addAll(cards);
         }
 
+        List<String> sharedCards = new ArrayList<>(union);
+        sharedCards.sort(String.CASE_INSENSITIVE_ORDER);
+
         List<String> memberLines = new ArrayList<>();
         if (!localOwned.isEmpty())
         {
-            memberLines.add("You — " + localOwned.size() + " unique");
+            memberLines.add(localPlayerName() + " — " + localOwned.size());
         }
-        for (Map.Entry<Long, Set<String>> e : partyOwned.entrySet())
-        {
-            PartyMember member = partyService.getMemberById(e.getKey());
-            String who = member != null && member.getDisplayName() != null ? member.getDisplayName() : "Member " + e.getKey();
-            memberLines.add(who + " — " + e.getValue().size() + " unique");
-        }
-        memberLines.sort(String.CASE_INSENSITIVE_ORDER);
-        List<String> recentLines = new ArrayList<>(recent);
-        String status = partyService.isInParty()
-            ? (localOwned.isEmpty() ? "Party connected • waiting for TCG data" : "Party connected • TCG linked")
-            : (localOwned.isEmpty() ? "Not in RuneLite Party • waiting for TCG" : "TCG linked • join a RuneLite Party");
 
-        SwingUtilities.invokeLater(() -> panel.update(status, union.size(), memberLines, recentLines));
+        for (Map.Entry<Long, Set<String>> entry : partyOwned.entrySet())
+        {
+            String name = partyNames.get(entry.getKey());
+            if (name == null)
+            {
+                PartyMember member = partyService.getMemberById(entry.getKey());
+                name = member == null ? null : cleanName(member.getDisplayName());
+            }
+            if (name == null)
+            {
+                name = "CardCore member";
+            }
+
+            memberLines.add(name + " — " + entry.getValue().size());
+        }
+
+        memberLines.sort(String.CASE_INSENSITIVE_ORDER);
+
+        boolean tcgLinked = !localOwned.isEmpty();
+        boolean inParty = partyService.isInParty();
+
+        SwingUtilities.invokeLater(() ->
+            panel.update(tcgLinked ? "linked" : "waiting", inParty, union.size(), memberLines, sharedCards));
+    }
+
+    private String localPlayerName()
+    {
+        if (client.getLocalPlayer() != null)
+        {
+            String name = cleanName(client.getLocalPlayer().getName());
+            if (name != null)
+            {
+                return name;
+            }
+        }
+
+        PartyMember local = partyService.getLocalMember();
+        if (local != null)
+        {
+            String name = cleanName(local.getDisplayName());
+            if (name != null)
+            {
+                return name;
+            }
+        }
+
+        return "You";
+    }
+
+    private static String cleanName(String name)
+    {
+        if (name == null)
+        {
+            return null;
+        }
+
+        String trimmed = name.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }
