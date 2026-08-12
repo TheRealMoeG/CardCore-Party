@@ -14,20 +14,29 @@ import java.awt.GradientPaint;
 import java.awt.GridLayout;
 import java.awt.RenderingHints;
 import java.awt.Toolkit;
+import java.awt.Window;
 import java.awt.datatransfer.StringSelection;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.Consumer;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
+import javax.swing.DefaultListModel;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JDialog;
 import javax.swing.JLabel;
+import javax.swing.JList;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextField;
+import javax.swing.ListCellRenderer;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import net.runelite.client.ui.PluginPanel;
@@ -43,19 +52,22 @@ public class CardCorePartyPanel extends PluginPanel
     private static final Color TEXT = new Color(235, 232, 242);
     private static final Color MUTED = new Color(160, 154, 174);
     private static final Color GREEN = new Color(89, 201, 128);
-    private static final Color RED = new Color(224, 102, 102);
 
     private final JLabel tcgStatus = new JLabel("● Waiting for TCG", SwingConstants.CENTER);
-    private final JLabel partyStatus = new JLabel("No party joined", SwingConstants.CENTER);
+    private final JLabel partyStatus = new JLabel("Not joined", SwingConstants.CENTER);
     private final JLabel sharedCount = new JLabel("0", SwingConstants.CENTER);
+    private final JLabel yoursCount = new JLabel("0", SwingConstants.CENTER);
+    private final JLabel partyAddsCount = new JLabel("+0", SwingConstants.CENTER);
 
     private final JTextField partyKey = styledField("Party code");
-    private final JTextField search = styledField("Search shared cards");
-
     private final JPanel members = transparentVertical();
-    private final JPanel cards = transparentVertical();
+    private final JPanel partyAvailable = transparentVertical();
+    private final JButton browseButton = accentButton("Browse collection");
 
+    private List<String> localCards = new ArrayList<>();
     private List<String> sharedCards = new ArrayList<>();
+    private List<String> partyOnlyCards = new ArrayList<>();
+    private boolean inParty;
 
     private Runnable createAction = () -> {};
     private Consumer<String> joinAction = s -> {};
@@ -72,8 +84,6 @@ public class CardCorePartyPanel extends PluginPanel
         background.setBorder(BorderFactory.createEmptyBorder(10, 9, 10, 9));
 
         JPanel content = transparentVertical();
-        content.setBorder(null);
-
         content.add(buildHeader());
         content.add(Box.createVerticalStrut(10));
         content.add(buildSharedCard());
@@ -95,14 +105,8 @@ public class CardCorePartyPanel extends PluginPanel
         background.add(scroll, BorderLayout.CENTER);
         add(background, BorderLayout.CENTER);
 
-        search.getDocument().addDocumentListener(new DocumentListener()
-        {
-            @Override public void insertUpdate(DocumentEvent e) { renderCards(); }
-            @Override public void removeUpdate(DocumentEvent e) { renderCards(); }
-            @Override public void changedUpdate(DocumentEvent e) { renderCards(); }
-        });
-
-        update("waiting", false, 0, Collections.emptyList(), Collections.emptyList());
+        browseButton.addActionListener(e -> openCollectionBrowser());
+        update("waiting", false, 0, Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
     }
 
     private JPanel buildHeader()
@@ -135,16 +139,16 @@ public class CardCorePartyPanel extends PluginPanel
     {
         RoundedPanel panel = new RoundedPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createEmptyBorder(9, 10, 9, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(9, 10, 10, 10));
 
-        JLabel label = smallCaps("SHARED UNLOCKS");
+        JLabel label = smallCaps("AVAILABLE NOW");
         label.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         sharedCount.setForeground(TEXT);
         sharedCount.setFont(sharedCount.getFont().deriveFont(Font.BOLD, 25f));
         sharedCount.setAlignmentX(Component.CENTER_ALIGNMENT);
 
-        JLabel detail = new JLabel("unique cards", SwingConstants.CENTER);
+        JLabel detail = new JLabel("shared unlocks", SwingConstants.CENTER);
         detail.setForeground(MUTED);
         detail.setFont(detail.getFont().deriveFont(10f));
         detail.setAlignmentX(Component.CENTER_ALIGNMENT);
@@ -153,6 +157,13 @@ public class CardCorePartyPanel extends PluginPanel
         panel.add(Box.createVerticalStrut(3));
         panel.add(sharedCount);
         panel.add(detail);
+        panel.add(Box.createVerticalStrut(8));
+
+        JPanel stats = transparentGrid(1, 2, 6, 0);
+        stats.add(metric("YOURS", yoursCount));
+        stats.add(metric("FROM PARTY", partyAddsCount));
+        stats.setMaximumSize(new Dimension(Integer.MAX_VALUE, 48));
+        panel.add(stats);
 
         return panel;
     }
@@ -164,12 +175,11 @@ public class CardCorePartyPanel extends PluginPanel
         panel.setBorder(BorderFactory.createEmptyBorder(9, 9, 9, 9));
 
         JPanel heading = transparentHorizontal();
-        JLabel label = smallCaps("PARTY");
+        heading.add(smallCaps("PARTY"));
+        heading.add(Box.createHorizontalGlue());
+
         partyStatus.setForeground(MUTED);
         partyStatus.setFont(partyStatus.getFont().deriveFont(Font.PLAIN, 10f));
-
-        heading.add(label);
-        heading.add(Box.createHorizontalGlue());
         heading.add(partyStatus);
 
         panel.add(heading);
@@ -216,7 +226,6 @@ public class CardCorePartyPanel extends PluginPanel
         panel.add(smallCaps("MEMBERS"));
         panel.add(Box.createVerticalStrut(6));
         panel.add(members);
-
         return panel;
     }
 
@@ -227,18 +236,17 @@ public class CardCorePartyPanel extends PluginPanel
         panel.setBorder(BorderFactory.createEmptyBorder(9, 10, 10, 10));
 
         JPanel heading = transparentHorizontal();
-        heading.add(smallCaps("SHARED CARDS"));
+        heading.add(smallCaps("AVAILABLE FROM PARTY"));
         heading.add(Box.createHorizontalGlue());
         panel.add(heading);
         panel.add(Box.createVerticalStrut(6));
 
-        search.setMaximumSize(new Dimension(Integer.MAX_VALUE, 29));
-        panel.add(search);
-        panel.add(Box.createVerticalStrut(7));
+        panel.add(partyAvailable);
+        panel.add(Box.createVerticalStrut(8));
 
-        JPanel listWrap = transparentVertical();
-        listWrap.add(cards);
-        panel.add(listWrap);
+        browseButton.setMaximumSize(new Dimension(Integer.MAX_VALUE, 29));
+        browseButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+        panel.add(browseButton);
 
         return panel;
     }
@@ -265,8 +273,11 @@ public class CardCorePartyPanel extends PluginPanel
         boolean inParty,
         int sharedUniqueCount,
         List<String> memberLines,
+        List<String> localCardNames,
         List<String> sharedCardNames)
     {
+        this.inParty = inParty;
+
         boolean linked = "linked".equalsIgnoreCase(tcgState);
         tcgStatus.setText(linked ? "● TCG connected" : "● Waiting for TCG");
         tcgStatus.setForeground(linked ? GREEN : MUTED);
@@ -274,15 +285,27 @@ public class CardCorePartyPanel extends PluginPanel
         partyStatus.setText(inParty ? "Connected" : "Not joined");
         partyStatus.setForeground(inParty ? GREEN : MUTED);
 
+        localCards = sortedCopy(localCardNames);
+        sharedCards = sortedCopy(sharedCardNames);
+
+        Set<String> own = new HashSet<>(localCards);
+        partyOnlyCards = new ArrayList<>();
+        for (String card : sharedCards)
+        {
+            if (!own.contains(card))
+            {
+                partyOnlyCards.add(card);
+            }
+        }
+        partyOnlyCards.sort(String.CASE_INSENSITIVE_ORDER);
+
         sharedCount.setText(String.valueOf(sharedUniqueCount));
+        yoursCount.setText(String.valueOf(localCards.size()));
+        partyAddsCount.setText("+" + partyOnlyCards.size());
+        browseButton.setText("Browse " + sharedCards.size() + " available");
 
         refillMembers(memberLines);
-
-        sharedCards = sharedCardNames == null
-            ? new ArrayList<>()
-            : new ArrayList<>(sharedCardNames);
-        sharedCards.sort(String.CASE_INSENSITIVE_ORDER);
-        renderCards();
+        refillPartyAvailable();
 
         revalidate();
         repaint();
@@ -295,8 +318,7 @@ public class CardCorePartyPanel extends PluginPanel
 
         if (safe.isEmpty())
         {
-            JLabel empty = mutedLabel("No party members yet");
-            members.add(empty);
+            members.add(mutedLabel("No party members yet"));
         }
         else
         {
@@ -324,41 +346,160 @@ public class CardCorePartyPanel extends PluginPanel
         members.repaint();
     }
 
-    private void renderCards()
+    private void refillPartyAvailable()
     {
-        cards.removeAll();
+        partyAvailable.removeAll();
 
-        String needle = search.getText() == null ? "" : search.getText().trim().toLowerCase();
-        int shown = 0;
-
-        for (String card : sharedCards)
+        if (!inParty)
         {
-            if (!needle.isEmpty() && !card.toLowerCase().contains(needle))
+            partyAvailable.add(mutedLabel("Join a party to share unlocks"));
+        }
+        else if (partyOnlyCards.isEmpty())
+        {
+            partyAvailable.add(mutedLabel("No additional party unlocks yet"));
+        }
+        else
+        {
+            int limit = Math.min(4, partyOnlyCards.size());
+            for (int i = 0; i < limit; i++)
             {
-                continue;
+                JPanel row = transparentHorizontal();
+                JLabel plus = new JLabel("+");
+                plus.setForeground(PURPLE);
+                plus.setFont(plus.getFont().deriveFont(Font.BOLD, 12f));
+
+                JLabel name = new JLabel(partyOnlyCards.get(i));
+                name.setForeground(TEXT);
+                name.setFont(name.getFont().deriveFont(11f));
+
+                row.add(plus);
+                row.add(Box.createHorizontalStrut(6));
+                row.add(name);
+                row.add(Box.createHorizontalGlue());
+                row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 21));
+                partyAvailable.add(row);
             }
 
-            JLabel item = new JLabel(card);
-            item.setForeground(TEXT);
-            item.setFont(item.getFont().deriveFont(Font.PLAIN, 11f));
-            item.setBorder(BorderFactory.createEmptyBorder(3, 2, 3, 2));
-            cards.add(item);
-
-            shown++;
-            if (shown >= 150)
+            if (partyOnlyCards.size() > limit)
             {
-                cards.add(mutedLabel("More cards available — use search"));
-                break;
+                partyAvailable.add(mutedLabel("+ " + (partyOnlyCards.size() - limit) + " more from your party"));
             }
         }
 
-        if (shown == 0)
-        {
-            cards.add(mutedLabel(sharedCards.isEmpty() ? "No shared cards yet" : "No matching cards"));
-        }
+        partyAvailable.revalidate();
+        partyAvailable.repaint();
+    }
 
-        cards.revalidate();
-        cards.repaint();
+    private void openCollectionBrowser()
+    {
+        Window owner = SwingUtilities.getWindowAncestor(this);
+        JDialog dialog = new JDialog(owner, "CardCore Collection");
+        dialog.setModal(false);
+        dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
+
+        GradientPanel root = new GradientPanel();
+        root.setLayout(new BorderLayout(0, 10));
+        root.setBorder(BorderFactory.createEmptyBorder(14, 14, 14, 14));
+
+        JPanel top = transparentVertical();
+        JLabel title = new JLabel("SHARED COLLECTION");
+        title.setForeground(TEXT);
+        title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
+        top.add(title);
+
+        JLabel subtitle = new JLabel(sharedCards.size() + " cards currently available to the party");
+        subtitle.setForeground(MUTED);
+        subtitle.setFont(subtitle.getFont().deriveFont(11f));
+        top.add(Box.createVerticalStrut(2));
+        top.add(subtitle);
+        top.add(Box.createVerticalStrut(10));
+
+        JPanel controls = transparentHorizontal();
+        JTextField search = styledField("Search available cards");
+        search.setPreferredSize(new Dimension(260, 30));
+
+        JComboBox<String> filter = new JComboBox<>(new String[]{"All available", "Mine", "From party"});
+        filter.setPreferredSize(new Dimension(130, 30));
+        filter.setBackground(CARD);
+        filter.setForeground(TEXT);
+
+        controls.add(search);
+        controls.add(Box.createHorizontalStrut(8));
+        controls.add(filter);
+        top.add(controls);
+        root.add(top, BorderLayout.NORTH);
+
+        DefaultListModel<String> model = new DefaultListModel<>();
+        JList<String> list = new JList<>(model);
+        list.setBackground(BG_BOTTOM);
+        list.setForeground(TEXT);
+        list.setSelectionBackground(PURPLE_DARK);
+        list.setSelectionForeground(TEXT);
+        list.setFixedCellHeight(30);
+
+        Set<String> ownSnapshot = new HashSet<>(localCards);
+        List<String> allSnapshot = new ArrayList<>(sharedCards);
+        List<String> partySnapshot = new ArrayList<>(partyOnlyCards);
+        list.setCellRenderer(new CollectionRenderer(ownSnapshot));
+
+        JLabel resultCount = mutedLabel("");
+
+        Runnable refresh = () ->
+        {
+            String needle = search.getText() == null ? "" : search.getText().trim().toLowerCase();
+            int mode = filter.getSelectedIndex();
+            List<String> source;
+            if (mode == 1)
+            {
+                source = new ArrayList<>(localCards);
+            }
+            else if (mode == 2)
+            {
+                source = partySnapshot;
+            }
+            else
+            {
+                source = allSnapshot;
+            }
+
+            model.clear();
+            for (String card : source)
+            {
+                if (needle.isEmpty() || card.toLowerCase().contains(needle))
+                {
+                    model.addElement(card);
+                }
+            }
+            resultCount.setText(model.size() + " shown");
+        };
+
+        search.getDocument().addDocumentListener(new DocumentListener()
+        {
+            @Override public void insertUpdate(DocumentEvent e) { refresh.run(); }
+            @Override public void removeUpdate(DocumentEvent e) { refresh.run(); }
+            @Override public void changedUpdate(DocumentEvent e) { refresh.run(); }
+        });
+        filter.addActionListener(e -> refresh.run());
+        refresh.run();
+
+        JScrollPane listScroll = new JScrollPane(list);
+        listScroll.setBorder(BorderFactory.createLineBorder(CARD_BORDER));
+        listScroll.getVerticalScrollBar().setUnitIncrement(16);
+        root.add(listScroll, BorderLayout.CENTER);
+
+        JPanel footer = transparentHorizontal();
+        footer.add(resultCount);
+        footer.add(Box.createHorizontalGlue());
+        JButton close = subtleButton("Close");
+        close.addActionListener(e -> dialog.dispose());
+        footer.add(close);
+        root.add(footer, BorderLayout.SOUTH);
+
+        dialog.setContentPane(root);
+        dialog.setSize(520, 620);
+        dialog.setMinimumSize(new Dimension(420, 450));
+        dialog.setLocationRelativeTo(this);
+        dialog.setVisible(true);
     }
 
     private void copyPartyCode()
@@ -369,6 +510,36 @@ public class CardCorePartyPanel extends PluginPanel
             Toolkit.getDefaultToolkit().getSystemClipboard()
                 .setContents(new StringSelection(value), null);
         }
+    }
+
+    private static List<String> sortedCopy(List<String> input)
+    {
+        List<String> copy = input == null ? new ArrayList<>() : new ArrayList<>(input);
+        copy.sort(String.CASE_INSENSITIVE_ORDER);
+        return copy;
+    }
+
+    private static JPanel metric(String heading, JLabel value)
+    {
+        JPanel metric = transparentVertical();
+        metric.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(59, 54, 69)),
+            BorderFactory.createEmptyBorder(4, 5, 4, 5)
+        ));
+
+        JLabel title = new JLabel(heading, SwingConstants.CENTER);
+        title.setForeground(MUTED);
+        title.setFont(title.getFont().deriveFont(Font.BOLD, 9f));
+        title.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        value.setForeground(TEXT);
+        value.setFont(value.getFont().deriveFont(Font.BOLD, 13f));
+        value.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        metric.add(title);
+        metric.add(Box.createVerticalStrut(1));
+        metric.add(value);
+        return metric;
     }
 
     private static JTextField styledField(String tooltip)
@@ -452,6 +623,42 @@ public class CardCorePartyPanel extends PluginPanel
         return panel;
     }
 
+    private static class CollectionRenderer extends JPanel implements ListCellRenderer<String>
+    {
+        private final Set<String> owned;
+        private final JLabel name = new JLabel();
+        private final JLabel source = new JLabel();
+
+        CollectionRenderer(Set<String> owned)
+        {
+            this.owned = owned;
+            setLayout(new BorderLayout(8, 0));
+            setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+            name.setForeground(TEXT);
+            name.setFont(name.getFont().deriveFont(11f));
+            source.setFont(source.getFont().deriveFont(Font.BOLD, 9f));
+            add(name, BorderLayout.CENTER);
+            add(source, BorderLayout.EAST);
+        }
+
+        @Override
+        public Component getListCellRendererComponent(
+            JList<? extends String> list,
+            String value,
+            int index,
+            boolean isSelected,
+            boolean cellHasFocus)
+        {
+            boolean mine = owned.contains(value);
+            name.setText(value);
+            source.setText(mine ? "YOURS" : "PARTY");
+            source.setForeground(mine ? MUTED : PURPLE);
+            setBackground(isSelected ? PURPLE_DARK : (index % 2 == 0 ? CARD : BG_BOTTOM));
+            setOpaque(true);
+            return this;
+        }
+    }
+
     private static class GradientPanel extends JPanel
     {
         GradientPanel()
@@ -466,7 +673,6 @@ public class CardCorePartyPanel extends PluginPanel
             g2.setPaint(new GradientPaint(0, 0, BG_TOP, 0, getHeight(), BG_BOTTOM));
             g2.fillRect(0, 0, getWidth(), getHeight());
 
-            // faint CardCore accent glow in the top-right
             g2.setComposite(AlphaComposite.SrcOver.derive(0.10f));
             g2.setColor(PURPLE);
             g2.fillOval(getWidth() - 95, -55, 135, 135);

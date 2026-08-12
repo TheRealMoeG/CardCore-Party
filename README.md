@@ -33,3 +33,16 @@ The sidebar now uses a custom dark purple CardCore theme with:
 - styled member rows
 - searchable shared collection
 - no horizontal scrollbar
+
+
+## v1.2 collection experience
+
+The sidebar no longer renders the entire shared collection. It now shows:
+
+- total cards available to the party
+- your own card count
+- how many extra cards friends add
+- a short preview of cards available only through the party
+- a **Browse collection** window with search and All / Mine / From party filters
+
+The browser uses only the owned-card names CardCore already receives from OSRS TCG's public PluginMessage interface. No OSRS TCG code, art, database files, or internal classes are copied into CardCore.

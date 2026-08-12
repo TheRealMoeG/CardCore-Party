@@ -57,6 +57,7 @@ public class CardCorePartyPlugin extends Plugin
     private final Map<Long, String> partyNames = new HashMap<>();
 
     private long revision;
+    private boolean tcgLinked;
     private CardCorePartyPanel panel;
     private NavigationButton navigationButton;
 
@@ -96,6 +97,7 @@ public class CardCorePartyPlugin extends Plugin
             clientToolbar.removeNavigation(navigationButton);
         }
         localOwned.clear();
+        tcgLinked = false;
         partyOwned.clear();
         partyNames.clear();
     }
@@ -160,6 +162,7 @@ public class CardCorePartyPlugin extends Plugin
             return;
         }
 
+        tcgLinked = true;
         localOwned.clear();
         localOwned.addAll(next);
         publishLocalSnapshot();
@@ -273,11 +276,14 @@ public class CardCorePartyPlugin extends Plugin
             union.addAll(cards);
         }
 
+        List<String> localCards = new ArrayList<>(localOwned);
+        localCards.sort(String.CASE_INSENSITIVE_ORDER);
+
         List<String> sharedCards = new ArrayList<>(union);
         sharedCards.sort(String.CASE_INSENSITIVE_ORDER);
 
         List<String> memberLines = new ArrayList<>();
-        if (!localOwned.isEmpty())
+        if (tcgLinked)
         {
             memberLines.add(localPlayerName() + " — " + localOwned.size());
         }
@@ -300,11 +306,10 @@ public class CardCorePartyPlugin extends Plugin
 
         memberLines.sort(String.CASE_INSENSITIVE_ORDER);
 
-        boolean tcgLinked = !localOwned.isEmpty();
         boolean inParty = partyService.isInParty();
 
         SwingUtilities.invokeLater(() ->
-            panel.update(tcgLinked ? "linked" : "waiting", inParty, union.size(), memberLines, sharedCards));
+            panel.update(tcgLinked ? "linked" : "waiting", inParty, union.size(), memberLines, localCards, sharedCards));
     }
 
     private String localPlayerName()
