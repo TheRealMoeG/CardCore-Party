@@ -46,3 +46,11 @@ The sidebar no longer renders the entire shared collection. It now shows:
 - a **Browse collection** window with search and All / Mine / From party filters
 
 The browser uses only the owned-card names CardCore already receives from OSRS TCG's public PluginMessage interface. No OSRS TCG code, art, database files, or internal classes are copied into CardCore.
+
+
+## v1.3
+
+- Cleaner UI typography and right-aligned member card counts.
+- Recent Pulls section showing new cards detected after each member's baseline sync.
+- Recent pulls include player name and relative time.
+- Initial collection syncs are treated as a baseline, so joining a party does not flood Recent Pulls with old cards.

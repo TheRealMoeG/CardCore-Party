@@ -1,5 +1,6 @@
 package com.cardcoreparty.ui;
 
+import com.cardcoreparty.party.RecentPull;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.BorderLayout;
@@ -53,6 +54,12 @@ public class CardCorePartyPanel extends PluginPanel
     private static final Color MUTED = new Color(160, 154, 174);
     private static final Color GREEN = new Color(89, 201, 128);
 
+    private static final Font TITLE_FONT = new Font(Font.DIALOG, Font.BOLD, 20);
+    private static final Font BODY_FONT = new Font(Font.DIALOG, Font.PLAIN, 12);
+    private static final Font BODY_BOLD = new Font(Font.DIALOG, Font.BOLD, 12);
+    private static final Font SMALL_FONT = new Font(Font.DIALOG, Font.PLAIN, 10);
+    private static final Font SMALL_BOLD = new Font(Font.DIALOG, Font.BOLD, 10);
+
     private final JLabel tcgStatus = new JLabel("● Waiting for TCG", SwingConstants.CENTER);
     private final JLabel partyStatus = new JLabel("Not joined", SwingConstants.CENTER);
     private final JLabel sharedCount = new JLabel("0", SwingConstants.CENTER);
@@ -62,11 +69,13 @@ public class CardCorePartyPanel extends PluginPanel
     private final JTextField partyKey = styledField("Party code");
     private final JPanel members = transparentVertical();
     private final JPanel partyAvailable = transparentVertical();
+    private final JPanel recentPullsPanel = transparentVertical();
     private final JButton browseButton = accentButton("Browse collection");
 
     private List<String> localCards = new ArrayList<>();
     private List<String> sharedCards = new ArrayList<>();
     private List<String> partyOnlyCards = new ArrayList<>();
+    private List<RecentPull> recentPulls = new ArrayList<>();
     private boolean inParty;
 
     private Runnable createAction = () -> {};
@@ -92,6 +101,8 @@ public class CardCorePartyPanel extends PluginPanel
         content.add(Box.createVerticalStrut(10));
         content.add(buildMembersCard());
         content.add(Box.createVerticalStrut(10));
+        content.add(buildRecentCard());
+        content.add(Box.createVerticalStrut(10));
         content.add(buildCollectionCard());
 
         JScrollPane scroll = new JScrollPane(content);
@@ -106,7 +117,7 @@ public class CardCorePartyPanel extends PluginPanel
         add(background, BorderLayout.CENTER);
 
         browseButton.addActionListener(e -> openCollectionBrowser());
-        update("waiting", false, 0, Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
+        update("waiting", false, 0, Collections.emptyList(), Collections.emptyList(), Collections.emptyList(), Collections.emptyList());
     }
 
     private JPanel buildHeader()
@@ -115,16 +126,16 @@ public class CardCorePartyPanel extends PluginPanel
 
         JLabel title = new JLabel("CARDCORE", SwingConstants.CENTER);
         title.setForeground(TEXT);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 20f));
+        title.setFont(TITLE_FONT);
         title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         JLabel subtitle = new JLabel("Shared OSRS TCG unlocks", SwingConstants.CENTER);
         subtitle.setForeground(MUTED);
-        subtitle.setFont(subtitle.getFont().deriveFont(Font.PLAIN, 11f));
+        subtitle.setFont(SMALL_FONT);
         subtitle.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         tcgStatus.setForeground(MUTED);
-        tcgStatus.setFont(tcgStatus.getFont().deriveFont(Font.BOLD, 11f));
+        tcgStatus.setFont(new Font(Font.DIALOG, Font.BOLD, 11));
         tcgStatus.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         header.add(title);
@@ -145,12 +156,12 @@ public class CardCorePartyPanel extends PluginPanel
         label.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         sharedCount.setForeground(TEXT);
-        sharedCount.setFont(sharedCount.getFont().deriveFont(Font.BOLD, 25f));
+        sharedCount.setFont(new Font(Font.DIALOG, Font.BOLD, 25));
         sharedCount.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         JLabel detail = new JLabel("shared unlocks", SwingConstants.CENTER);
         detail.setForeground(MUTED);
-        detail.setFont(detail.getFont().deriveFont(10f));
+        detail.setFont(SMALL_FONT);
         detail.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         panel.add(label);
@@ -179,7 +190,7 @@ public class CardCorePartyPanel extends PluginPanel
         heading.add(Box.createHorizontalGlue());
 
         partyStatus.setForeground(MUTED);
-        partyStatus.setFont(partyStatus.getFont().deriveFont(Font.PLAIN, 10f));
+        partyStatus.setFont(SMALL_FONT);
         heading.add(partyStatus);
 
         panel.add(heading);
@@ -229,6 +240,18 @@ public class CardCorePartyPanel extends PluginPanel
         return panel;
     }
 
+    private JPanel buildRecentCard()
+    {
+        RoundedPanel panel = new RoundedPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createEmptyBorder(9, 10, 9, 10));
+
+        panel.add(smallCaps("RECENT PULLS"));
+        panel.add(Box.createVerticalStrut(6));
+        panel.add(recentPullsPanel);
+        return panel;
+    }
+
     private JPanel buildCollectionCard()
     {
         RoundedPanel panel = new RoundedPanel();
@@ -274,7 +297,8 @@ public class CardCorePartyPanel extends PluginPanel
         int sharedUniqueCount,
         List<String> memberLines,
         List<String> localCardNames,
-        List<String> sharedCardNames)
+        List<String> sharedCardNames,
+        List<RecentPull> recentPulls)
     {
         this.inParty = inParty;
 
@@ -303,8 +327,10 @@ public class CardCorePartyPanel extends PluginPanel
         yoursCount.setText(String.valueOf(localCards.size()));
         partyAddsCount.setText("+" + partyOnlyCards.size());
         browseButton.setText("Browse " + sharedCards.size() + " available");
+        this.recentPulls = recentPulls == null ? new ArrayList<>() : new ArrayList<>(recentPulls);
 
         refillMembers(memberLines);
+        refillRecentPulls();
         refillPartyAvailable();
 
         revalidate();
@@ -324,26 +350,95 @@ public class CardCorePartyPanel extends PluginPanel
         {
             for (String line : safe)
             {
+                int split = line.lastIndexOf(" — ");
+                String playerName = split >= 0 ? line.substring(0, split) : line;
+                String count = split >= 0 ? line.substring(split + 3) : "";
+
                 JPanel row = transparentHorizontal();
                 JLabel bullet = new JLabel("●");
                 bullet.setForeground(GREEN);
-                bullet.setFont(bullet.getFont().deriveFont(9f));
+                bullet.setFont(SMALL_BOLD);
 
-                JLabel text = new JLabel(line);
-                text.setForeground(TEXT);
-                text.setFont(text.getFont().deriveFont(11f));
+                JLabel name = new JLabel(playerName);
+                name.setForeground(TEXT);
+                name.setFont(BODY_FONT);
+
+                JLabel total = new JLabel(count);
+                total.setForeground(MUTED);
+                total.setFont(SMALL_FONT);
 
                 row.add(bullet);
                 row.add(Box.createHorizontalStrut(6));
-                row.add(text);
+                row.add(name);
                 row.add(Box.createHorizontalGlue());
-                row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 22));
+                row.add(total);
+                row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 24));
                 members.add(row);
             }
         }
 
         members.revalidate();
         members.repaint();
+    }
+
+    private void refillRecentPulls()
+    {
+        recentPullsPanel.removeAll();
+
+        if (recentPulls.isEmpty())
+        {
+            recentPullsPanel.add(mutedLabel("New pulls will appear here"));
+        }
+        else
+        {
+            int limit = Math.min(5, recentPulls.size());
+            for (int i = 0; i < limit; i++)
+            {
+                RecentPull pull = recentPulls.get(i);
+
+                JPanel row = transparentVertical();
+                JLabel card = new JLabel(pull.getCardName());
+                card.setForeground(TEXT);
+                card.setFont(BODY_BOLD);
+
+                JLabel meta = new JLabel(pull.getPlayerName() + "  •  " + timeAgo(pull.getTimestamp()));
+                meta.setForeground(MUTED);
+                meta.setFont(SMALL_FONT);
+
+                row.add(card);
+                row.add(Box.createVerticalStrut(1));
+                row.add(meta);
+                row.setBorder(BorderFactory.createEmptyBorder(2, 0, 5, 0));
+                row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+                recentPullsPanel.add(row);
+            }
+        }
+
+        recentPullsPanel.revalidate();
+        recentPullsPanel.repaint();
+    }
+
+    private static String timeAgo(long timestamp)
+    {
+        long seconds = Math.max(0L, (System.currentTimeMillis() - timestamp) / 1000L);
+        if (seconds < 60)
+        {
+            return "just now";
+        }
+
+        long minutes = seconds / 60L;
+        if (minutes < 60)
+        {
+            return minutes + "m ago";
+        }
+
+        long hours = minutes / 60L;
+        if (hours < 24)
+        {
+            return hours + "h ago";
+        }
+
+        return (hours / 24L) + "d ago";
     }
 
     private void refillPartyAvailable()
@@ -366,11 +461,11 @@ public class CardCorePartyPanel extends PluginPanel
                 JPanel row = transparentHorizontal();
                 JLabel plus = new JLabel("+");
                 plus.setForeground(PURPLE);
-                plus.setFont(plus.getFont().deriveFont(Font.BOLD, 12f));
+                plus.setFont(BODY_BOLD);
 
                 JLabel name = new JLabel(partyOnlyCards.get(i));
                 name.setForeground(TEXT);
-                name.setFont(name.getFont().deriveFont(11f));
+                name.setFont(BODY_FONT);
 
                 row.add(plus);
                 row.add(Box.createHorizontalStrut(6));
@@ -404,12 +499,12 @@ public class CardCorePartyPanel extends PluginPanel
         JPanel top = transparentVertical();
         JLabel title = new JLabel("SHARED COLLECTION");
         title.setForeground(TEXT);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 18f));
+        title.setFont(new Font(Font.DIALOG, Font.BOLD, 18));
         top.add(title);
 
         JLabel subtitle = new JLabel(sharedCards.size() + " cards currently available to the party");
         subtitle.setForeground(MUTED);
-        subtitle.setFont(subtitle.getFont().deriveFont(11f));
+        subtitle.setFont(BODY_FONT);
         top.add(Box.createVerticalStrut(2));
         top.add(subtitle);
         top.add(Box.createVerticalStrut(10));
@@ -529,11 +624,11 @@ public class CardCorePartyPanel extends PluginPanel
 
         JLabel title = new JLabel(heading, SwingConstants.CENTER);
         title.setForeground(MUTED);
-        title.setFont(title.getFont().deriveFont(Font.BOLD, 9f));
+        title.setFont(SMALL_BOLD);
         title.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         value.setForeground(TEXT);
-        value.setFont(value.getFont().deriveFont(Font.BOLD, 13f));
+        value.setFont(new Font(Font.DIALOG, Font.BOLD, 13));
         value.setAlignmentX(Component.CENTER_ALIGNMENT);
 
         metric.add(title);
@@ -578,7 +673,7 @@ public class CardCorePartyPanel extends PluginPanel
             BorderFactory.createLineBorder(border),
             BorderFactory.createEmptyBorder(4, 5, 4, 5)
         ));
-        button.setFont(button.getFont().deriveFont(Font.BOLD, 10f));
+        button.setFont(new Font(Font.DIALOG, Font.BOLD, 11));
         return button;
     }
 
@@ -586,7 +681,7 @@ public class CardCorePartyPanel extends PluginPanel
     {
         JLabel label = new JLabel(text);
         label.setForeground(new Color(190, 174, 221));
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 10f));
+        label.setFont(new Font(Font.DIALOG, Font.BOLD, 11));
         return label;
     }
 
@@ -594,7 +689,7 @@ public class CardCorePartyPanel extends PluginPanel
     {
         JLabel label = new JLabel(text);
         label.setForeground(MUTED);
-        label.setFont(label.getFont().deriveFont(Font.PLAIN, 10f));
+        label.setFont(SMALL_FONT);
         return label;
     }
 
@@ -635,8 +730,8 @@ public class CardCorePartyPanel extends PluginPanel
             setLayout(new BorderLayout(8, 0));
             setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
             name.setForeground(TEXT);
-            name.setFont(name.getFont().deriveFont(11f));
-            source.setFont(source.getFont().deriveFont(Font.BOLD, 9f));
+            name.setFont(BODY_FONT);
+            source.setFont(SMALL_BOLD);
             add(name, BorderLayout.CENTER);
             add(source, BorderLayout.EAST);
         }

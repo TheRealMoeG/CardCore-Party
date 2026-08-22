@@ -1,11 +1,14 @@
 package com.cardcoreparty;
 
 import com.cardcoreparty.party.CardCoreCollectionMessage;
+import com.cardcoreparty.party.RecentPull;
 import com.cardcoreparty.ui.CardCorePartyPanel;
 import com.google.inject.Provides;
 import java.awt.image.BufferedImage;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -55,6 +58,9 @@ public class CardCorePartyPlugin extends Plugin
     private final Set<String> localOwned = new LinkedHashSet<>();
     private final Map<Long, Set<String>> partyOwned = new HashMap<>();
     private final Map<Long, String> partyNames = new HashMap<>();
+    private final Deque<RecentPull> recentPulls = new ArrayDeque<>();
+
+    private static final int MAX_RECENT_PULLS = 50;
 
     private long revision;
     private boolean tcgLinked;
@@ -100,6 +106,7 @@ public class CardCorePartyPlugin extends Plugin
         tcgLinked = false;
         partyOwned.clear();
         partyNames.clear();
+        recentPulls.clear();
     }
 
     private void createParty()
@@ -107,6 +114,7 @@ public class CardCorePartyPlugin extends Plugin
         clientThread.invokeLater(() ->
         {
             String key = partyService.generatePassphrase();
+            recentPulls.clear();
             partyService.changeParty(key);
             SwingUtilities.invokeLater(() -> panel.setPartyKey(key));
             queryTcg();
@@ -123,6 +131,7 @@ public class CardCorePartyPlugin extends Plugin
         }
 
         partyService.changeParty(key);
+        recentPulls.clear();
         partyOwned.clear();
         partyNames.clear();
         queryTcg();
@@ -132,6 +141,7 @@ public class CardCorePartyPlugin extends Plugin
     private void leaveParty()
     {
         partyService.changeParty(null);
+        recentPulls.clear();
         partyOwned.clear();
         partyNames.clear();
         SwingUtilities.invokeLater(() -> panel.setPartyKey(""));
@@ -162,9 +172,18 @@ public class CardCorePartyPlugin extends Plugin
             return;
         }
 
+        boolean hadBaseline = tcgLinked;
+        Set<String> previous = new LinkedHashSet<>(localOwned);
+
         tcgLinked = true;
         localOwned.clear();
         localOwned.addAll(next);
+
+        if (hadBaseline)
+        {
+            recordNewPulls(localPlayerName(), previous, next);
+        }
+
         publishLocalSnapshot();
         refreshPanel();
     }
@@ -195,7 +214,7 @@ public class CardCorePartyPlugin extends Plugin
             }
         }
 
-        partyOwned.put(message.getMemberId(), next);
+        Set<String> previous = partyOwned.get(message.getMemberId());
 
         String explicit = cleanName(message.getPlayerName());
         if (explicit != null)
@@ -203,6 +222,13 @@ public class CardCorePartyPlugin extends Plugin
             partyNames.put(message.getMemberId(), explicit);
         }
 
+        String memberName = resolveMemberName(message.getMemberId());
+        if (previous != null)
+        {
+            recordNewPulls(memberName, previous, next);
+        }
+
+        partyOwned.put(message.getMemberId(), next);
         refreshPanel();
     }
 
@@ -263,6 +289,62 @@ public class CardCorePartyPlugin extends Plugin
         return result;
     }
 
+    private void recordNewPulls(String playerName, Set<String> previous, Set<String> current)
+    {
+        if (previous == null || current == null)
+        {
+            return;
+        }
+
+        List<String> added = new ArrayList<>();
+        for (String card : current)
+        {
+            if (!previous.contains(card))
+            {
+                added.add(card);
+            }
+        }
+        added.sort(String.CASE_INSENSITIVE_ORDER);
+
+        // A large jump is almost certainly a baseline/resync/import, not a handful of new pulls.
+        // Keeping those out prevents Recent Pulls from filling with an old collection after reloads.
+        if (added.size() > 20)
+        {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        for (String card : added)
+        {
+            recentPulls.addFirst(new RecentPull(playerName, card, now));
+            while (recentPulls.size() > MAX_RECENT_PULLS)
+            {
+                recentPulls.removeLast();
+            }
+        }
+    }
+
+    private String resolveMemberName(long memberId)
+    {
+        String name = cleanName(partyNames.get(memberId));
+        if (name != null)
+        {
+            return name;
+        }
+
+        PartyMember member = partyService.getMemberById(memberId);
+        if (member != null)
+        {
+            name = cleanName(member.getDisplayName());
+            if (name != null)
+            {
+                return name;
+            }
+        }
+
+        return "CardCore member";
+    }
+
     private void refreshPanel()
     {
         if (panel == null)
@@ -290,17 +372,7 @@ public class CardCorePartyPlugin extends Plugin
 
         for (Map.Entry<Long, Set<String>> entry : partyOwned.entrySet())
         {
-            String name = partyNames.get(entry.getKey());
-            if (name == null)
-            {
-                PartyMember member = partyService.getMemberById(entry.getKey());
-                name = member == null ? null : cleanName(member.getDisplayName());
-            }
-            if (name == null)
-            {
-                name = "CardCore member";
-            }
-
+            String name = resolveMemberName(entry.getKey());
             memberLines.add(name + " — " + entry.getValue().size());
         }
 
@@ -308,8 +380,10 @@ public class CardCorePartyPlugin extends Plugin
 
         boolean inParty = partyService.isInParty();
 
+        List<RecentPull> recent = new ArrayList<>(recentPulls);
+
         SwingUtilities.invokeLater(() ->
-            panel.update(tcgLinked ? "linked" : "waiting", inParty, union.size(), memberLines, localCards, sharedCards));
+            panel.update(tcgLinked ? "linked" : "waiting", inParty, union.size(), memberLines, localCards, sharedCards, recent));
     }
 
     private String localPlayerName()
